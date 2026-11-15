@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: crypto-orbit
+    runtime: docker
+    plan: free
+    envVars:
+      - key: DEMO_MODE
+        value: "true"
+      - key: PRICES_ONLINE
+        value: "false"
+      - key: DATABASE_URL
+        value: sqlite:///./data/orbit.db
+      - key: PYTHON_VERSION
+        value: "3.11"
