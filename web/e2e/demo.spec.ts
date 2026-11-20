@@ -13,7 +13,7 @@ test("load sample data and see exceptions", async ({ page }) => {
   await page.getByRole("button", { name: "Try with sample data" }).click();
   await expect(page.getByText(/UNMATCHED_WITHDRAWAL|Open exceptions|Needs your attention/i).first()).toBeVisible();
   await page.getByRole("link", { name: /Exceptions/i }).first().click();
-  await expect(page.getByText("UNMATCHED_WITHDRAWAL").first()).toBeVisible();
+  await expect(page.locator("tbody tr").filter({ hasText: "UNMATCHED_WITHDRAWAL" }).first()).toBeVisible();
   const results = await new AxeBuilder({ page }).analyze();
   const serious = results.violations.filter((item) => item.impact === "serious" || item.impact === "critical");
   expect(serious).toEqual([]);
@@ -23,7 +23,7 @@ test("filter and resolve an exception", async ({ page, request }) => {
   const load = await request.post(`${apiBase}/api/v1/demo/load`);
   expect(load.ok()).toBeTruthy();
   await page.goto("/exceptions?status=open&type=MISSING_FEE");
-  await page.getByText("MISSING_FEE").first().click();
+  await page.locator("tbody tr").filter({ hasText: "MISSING_FEE" }).first().click();
   await page.getByLabel("Note").fill("Fee was waived on the exchange.");
   await page.getByRole("button", { name: "Resolve" }).click();
   await expect(page.getByText(/Marked resolved/i)).toBeVisible();
