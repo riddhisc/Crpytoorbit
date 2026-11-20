@@ -1,185 +1,371 @@
 # Crypto Orbit Reconciliation Desk
 
-![CI](https://github.com/YOUR_GITHUB_USER/crypto-orbit/actions/workflows/ci.yml/badge.svg)
-![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+[![CI](https://github.com/riddhisc/Crpytoorbit/actions/workflows/ci.yml/badge.svg)](https://github.com/riddhisc/Crpytoorbit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**One clean ledger for a retail trader whose records are split across exchanges and a wallet — plus every exception that still needs a human, and an estimated India tax summary.**
+Crypto Orbit is a reconciliation desk for retail crypto records spread across exchanges and wallets. It creates one canonical ledger, identifies records that do not reconcile, and produces an India-focused FIFO tax estimate.
 
-Live demo: deploy the Render blueprint (`render.yaml`) and replace this line with the URL.
+It is designed for CSV and public-wallet workflows. It never asks for private keys or exchange API secrets.
 
 ![Overview](docs/images/overview.svg)
 ![Exceptions](docs/images/exceptions.svg)
 ![Mobile](docs/images/mobile.svg)
 
-Replace the SVG placeholders with a hero GIF and screenshots after the first deploy (dark Overview, Exceptions with the drawer open, and a phone-width view).
+## Contents
 
-## The problem
+- [What it does](#what-it-does)
+- [Architecture](#architecture)
+- [Quick start with Docker](#quick-start-with-docker)
+- [Local development](#local-development)
+- [Using the application](#using-the-application)
+- [Sample data](#sample-data)
+- [API and CLI](#api-and-cli)
+- [Configuration](#configuration)
+- [Testing and CI](#testing-and-ci)
+- [Adding a connector](#adding-a-connector)
+- [Deployment](#deployment)
+- [Security and limitations](#security-and-limitations)
+- [Repository tour](#repository-tour)
 
-Aarav trades from Mumbai. His year is split across a WazirX-style CSV, a Binance-style CSV, and one on-chain wallet export. The files disagree on column names, time zones, decimal marks, and tickers. A withdrawal on the exchange should be the same coins that arrived in the wallet, but the amounts differ by a network fee and one of them never shows up at all. He does not want a trading bot. He wants one ledger, a list of the rows that do not add up, and a cautious estimate of tax before he talks to a CA.
+## What it does
 
-## Features
+### Ingestion and normalization
 
-- **Normalize** each file with a connector into one canonical transaction.
-- **Reconcile** transfers by transaction hash, then by asset, time, and a 0.5% fee tolerance.
-- **Exceptions** with severity, a plain-English explanation, a suggested fix, and a status that survives the next run.
-- **FIFO tax estimate** in INR. Labelled ESTIMATE, not tax advice. Losses are not offset. TDS is informational.
-- Works with **zero API keys**. Public addresses and CSV files only.
+- Accepts exchange CSV files and ETH-style wallet JSON.
+- Detects a connector from the file header rather than relying on the filename.
+- Normalizes column names, date formats, decimal formats, tickers, and time zones into a canonical transaction model.
+- Treats malformed rows as import issues so one bad row does not discard the entire file.
+- Uses file hashes and transaction fingerprints to make re-uploads and reconciliation runs idempotent.
+
+### Reconciliation
+
+Transfers are matched in stages:
+
+1. Exact transaction-hash matches.
+2. Asset and time-window matching.
+3. Quantity matching with the configured network-fee tolerance.
+
+Unmatched transfers, duplicate trades, missing fees, price deviations, and negative balances become exceptions. Each exception has a severity, explanation, suggested fix, evidence, status, and resolution history.
+
+### Tax estimate
+
+The tax view calculates a FIFO estimate in INR. The result is intentionally labelled **ESTIMATE, not tax advice**. The current model is limited to spot-style records, does not offset losses, and reports TDS as informational. Verify all results with a qualified tax professional.
 
 ## Architecture
 
-The browser is a React SPA. FastAPI is the core of the project: it owns ingestion, reconciliation, tax, webhooks, and the OpenAPI contract, and in production it serves the built SPA. The CLI calls the same services.
+The project has one FastAPI application and a React/Vite frontend. FastAPI owns ingestion, reconciliation, tax calculations, exports, webhooks, health checks, and the OpenAPI contract. The CLI uses the same service layer as the API.
 
 ```mermaid
 flowchart LR
-  Browser["Browser SPA"] --> API["FastAPI"]
-  CLI["Typer CLI"] --> API
-  API --> DB[("SQLite or Postgres")]
-  API --> Files["Connectors and reconcile engine"]
+  Browser["React/Vite SPA"] --> API["FastAPI"]
+  CLI["Typer CLI"] --> Services["Shared services"]
+  API --> Services
+  Services --> DB[("SQLite or Postgres")]
+  Services --> Files["Connector registry and reconcile engine"]
 ```
 
-A trader uploads files. FastAPI hashes each file, detects a connector from the header, parses rows into canonical transactions, and enqueues a reconcile run. Bad rows become import issues instead of crashing the job.
+The production Docker image builds the frontend first, copies the generated `web/dist` directory into the Python image, and serves the SPA from FastAPI. During local development, Vite runs separately and proxies `/api` to port 8000.
 
 ```mermaid
 flowchart TD
-  Upload --> Hash["SHA-256 idempotency check"]
-  Hash --> Registry["Connector registry"]
-  Registry --> Parse["Adapter.parse"]
-  Parse --> Validate["Pydantic validation"]
-  Validate --> Persist --> Reconcile["Match, rules, fingerprint upsert"]
+  Upload["CSV or wallet upload"] --> Hash["SHA-256 and idempotency"]
+  Hash --> Detect["Connector detection"]
+  Detect --> Parse["Parse and validate rows"]
+  Parse --> Persist["Canonical transactions"]
+  Persist --> Match["Transfer matching"]
+  Match --> Rules["Exception rules and fingerprints"]
+  Rules --> Desk["Ledger, exceptions, tax, exports"]
 ```
 
-The full container, sequence, ERD, frontend, and deploy diagrams are in [docs/architecture.md](docs/architecture.md). Decisions are in [docs/adr](docs/adr).
+More detail is available in [docs/architecture.md](docs/architecture.md). Design decisions are recorded in [docs/adr](docs/adr).
 
-## Quick start
+## Quick start with Docker
+
+Docker is the simplest way to run the complete application:
 
 ```bash
 docker compose up --build
 ```
 
-Open http://localhost:8000 and choose **Try with sample data**. You should see six open exceptions and one matched ETH transfer with a network fee of 0.0015.
+Open [http://localhost:8000](http://localhost:8000). The default Compose configuration uses demo mode and stores SQLite data in the named `orbit-data` volume.
 
-Local development without Docker:
+To stop the application:
 
 ```bash
-python -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"   # Windows
-uvicorn app.main:app --reload --port 8000
-cd web && npm install && npm run dev
+docker compose down
 ```
 
-The Vite server on port 5173 proxies `/api` to FastAPI.
+To remove the local demo database as well:
 
-## Try it in 60 seconds
+```bash
+docker compose down -v
+```
 
-1. Open Overview. If the desk is empty, click **Try with sample data**.
-2. Read the four summary cards and the orbit. Planets with open exceptions are marked.
-3. Open **Exceptions**, filter to high severity, and open the unmatched ETH withdrawal.
-4. Add a note and click **Resolve**. The five-second toast can undo it.
-5. Open **Tax** and read the ESTIMATE banner before treating any number as advice.
+The Postgres service is optional and is enabled with the `postgres` profile:
 
-## Seeded scenarios
+```bash
+docker compose --profile postgres up -d postgres
+```
 
-| Scenario | Where | Exception |
-| --- | --- | --- |
-| Binance withdraws 1 ETH, wallet receives 0.9985 with the same hash | Binance + wallet | Not an exception. Match note: network fee 0.0015 |
-| Binance withdraws 0.5 ETH with no wallet deposit | Binance | UNMATCHED_WITHDRAWAL |
-| Wallet receives 1000 USDT with no exchange withdrawal | Wallet | UNMATCHED_DEPOSIT |
-| One WazirX BTC buy repeated exactly | WazirX | DUPLICATE_TRADE |
-| Sell 2 SOL after buying only 1.2 | WazirX | NEGATIVE_BALANCE |
-| BTC buy about 12% off the fallback price | WazirX | PRICE_DEVIATION |
-| Blank fee | WazirX | MISSING_FEE, plus an import warning |
-| Title row, blank line, comma decimal, DD/MM/YYYY, bad date | Both CSVs | Bad date is an import issue, not an exception |
-| Unknown headers | `unknown_exchange.csv` | 422 and the Map columns screen |
+## Local development
 
-Details live in [sample-data/README.md](sample-data/README.md).
+### Prerequisites
 
-## How to add a new exchange
+- Python 3.11 or newer
+- Node.js 20 or newer
+- npm
+- Optional: Docker Desktop
 
-1. Copy the contract in [docs/writing-a-connector.md](docs/writing-a-connector.md).
-2. Add `app/connectors/coindcx.py` with `detect` and `parse`.
-3. Register it in `builtin_connectors()`.
-4. Add a sample CSV and a test that asserts canonical rows and import issues.
-5. Run `pytest tests/test_core.py`.
+### Backend setup
 
-`detect` should key off a header signature, never a filename. `parse` must skip bad rows and return `ImportIssue` instead of raising.
+Windows PowerShell:
 
-## FDE skills demonstrated
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8000
+```
 
-| Skill | Where | Why it is here |
-| --- | --- | --- |
-| API design | `app/routers`, `app/schemas.py`, `/docs` | A customer integration needs a versioned contract, pagination, and one error shape. |
-| Customer integration | `app/cli.py`, `app/services/webhooks.py`, `app/routers/webhooks.py` | The same desk has to run from cron, Slack, and an inbound transaction feed. |
-| Data wrangling and SQL | `app/connectors`, `app/repositories/analytics.py` | Real files are messy, and running balances are a window query, not a loop in the UI. |
-| Reliability | `app/services/jobs.py`, `app/reconcile/service.py` | Re-uploads and re-runs must not duplicate rows or reopen a decision. |
-| Observability | `app/logging.py`, `app/metrics.py`, `/health`, `/ready` | A failed import needs a request id and a duration, not a blank 500. |
-| Security | `app/deps.py`, `app/services/webhooks.py`, `app/services/export.py` | Untrusted files, no private keys, signed webhooks, SSRF checks, formula-safe exports. |
-| AI-assisted workflows | `app/services/mapping.py` | A new CSV can be mapped with fuzzy matching. An LLM is optional and never trusted raw. |
-| Delivery | `Dockerfile`, `.github/workflows/ci.yml`, `render.yaml` | One image, CI on SQLite and Postgres, a free-tier deploy path. |
+macOS/Linux:
 
-## Customer integration notes
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8000
+```
 
-**Data we need:** CSV exports for each exchange, a wallet JSON (or a public address only if an Etherscan key is configured), the financial-year window, and which tickers are aliases.
+The API is available at [http://localhost:8000](http://localhost:8000). OpenAPI documentation is available at `/docs`, and the raw schema is at `/openapi.json`.
 
-**Assumptions:** trades are spot, wallets are ETH-style, tax is FIFO in INR, and fees are not cost unless `FEES_AS_COST` is turned on. We never ask for private keys or exchange API secrets.
+### Frontend setup
 
-**Discovery questions**
+In a second terminal:
 
-1. Which exchanges, and can you export the full year?
-2. Which wallets, and are any of them Bitcoin or exchange sub-accounts rather than ETH-style?
-3. Which financial year should the estimate cover?
-4. How should airdrops and staking rewards be treated?
-5. Do you want fees added to cost of acquisition?
-6. Who will resolve exceptions, and what does "done" mean for a duplicate?
-7. Where should high-severity alerts go (Slack, Discord, email webhook)?
-8. Will this run beside the CA's spreadsheet for one quarter before it becomes the source of truth?
+```bash
+cd web
+npm install
+npm run dev
+```
 
-**Rollout:** pilot on one quarter of sample-shaped files, parallel run against the CA's sheet, then go-live with a named owner for open exceptions.
+Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api`, `/health`, `/ready`, and `/metrics` to the FastAPI server on port 8000.
 
-**Risks:** a wrong price or a missed wallet dominates the tax estimate. Mitigate with the price-deviation and unmatched-transfer exceptions, and with the estimate banner. SQLite on Render's free disk is ephemeral; use `DATABASE_URL` and Postgres before real customer data.
+### Useful Make targets
 
-## Accessibility and performance
+```bash
+make dev       # Start FastAPI with reload
+make test      # Backend coverage plus frontend tests and typecheck
+make lint      # Ruff, mypy, ESLint, and TypeScript checks
+make demo      # Import the bundled sample files through the CLI
+```
 
-Target: WCAG 2.2 AA. Severity is icon plus text. Focus rings are visible. Drawers trap focus via Radix. Playwright runs axe and fails on serious or critical violations. Reduced motion stops the orbit animation and count-up. Route-level code splits the charts and the orbit. Lighthouse targets on Overview: Performance ≥ 90, Accessibility ≥ 95, Best Practices ≥ 95. Re-measure after you deploy; the scores are targets, not a claim about an unmeasured build.
+On Windows, run the underlying commands directly if `make` is not installed.
 
-## Repo tour
+## Using the application
 
-| Path | What it is |
+1. Open **Overview**.
+2. Select **Try with sample data** when the desk is empty, or open **Import** to upload files.
+3. Review the summary cards and holdings orbit.
+4. Open **Exceptions** and filter by status, severity, asset, or text.
+5. Open an exception to review its evidence and suggested fix.
+6. Add a resolution note and select **Resolve**, **Ignore**, or **Reopen**.
+7. Review the **Tax** page and export a ledger or exception CSV when needed.
+
+The demo data should produce one matched ETH transfer with a 0.0015 network fee and several intentional exceptions, including an unmatched withdrawal, unmatched deposit, duplicate trade, negative balance, price deviation, and missing fee.
+
+## Sample data
+
+The files in `sample-data/` represent common messy inputs:
+
+| File | Purpose |
 | --- | --- |
-| `app/` | FastAPI application, connectors, reconcile engine, routers |
-| `web/` | React desk |
-| `sample-data/` | The seeded files and the price fallback |
-| `tests/` | Pytest |
-| `docs/` | Architecture, ADRs, security, runbook, onboarding |
-| `alembic/` | Schema migrations |
+| `wazirx_trades.csv` | WazirX-style trade export with duplicate and missing-fee cases |
+| `binance_trades.csv` | Binance-style trade and withdrawal export |
+| `wallet_transfers.json` | ETH-style wallet transfer records |
+| `unknown_exchange.csv` | Unknown headers for the mapping flow |
+| `prices_fallback.json` | Offline INR price fallback used when online prices are disabled |
 
-## API error codes
+See [sample-data/README.md](sample-data/README.md) for the expected scenarios and connector details.
 
-Every error is `{"error":{"code","message","details","request_id"}}`.
+## API and CLI
 
-| Code | When |
+### Health and operations endpoints
+
+| Endpoint | Purpose |
 | --- | --- |
-| `UNSUPPORTED_FILE` | No connector matched. `details.files` lists headers for the mapping flow. |
-| `VALIDATION_ERROR` | Body or query failed validation, or a resolution note was missing. |
-| `UNAUTHORIZED` | Write call without a valid `X-API-Key` when demo mode is off. |
-| `NOT_FOUND` | Unknown id. |
-| `CONFLICT` | `Idempotency-Key` reused with a different payload. |
-| `FILE_TOO_LARGE` | Size or row cap. |
-| `RATE_LIMITED` | Upload or webhook limit. |
-| `WEBHOOK_BLOCKED` | URL is missing or resolves to a private address. |
-| `DEMO_DISABLED` | Reset called while `DEMO_MODE` is false. |
-| `NOT_READY` | Database or migrations are not at head. |
-| `INTERNAL` | Unhandled failure. The message stays generic; logs have the request id. |
+| `GET /health` | Liveness check |
+| `GET /ready` | Database and Alembic readiness check |
+| `GET /metrics` | Prometheus text metrics |
+| `GET /docs` | Interactive Swagger UI |
+| `GET /openapi.json` | OpenAPI schema |
 
-## Limitations
+### Main API areas
 
-No DeFi positions or NFTs. ETH-style wallet JSON only unless you add a connector. Tax is an estimate and FIFO only. Prices fall back to the bundled June–July 2024 file when CoinGecko is off or down.
+| Area | Examples |
+| --- | --- |
+| Summary and ledger | `GET /api/v1/summary`, `GET /api/v1/ledger` |
+| Imports | `POST /api/v1/imports`, `GET /api/v1/imports/{job_id}` |
+| Exceptions | `GET /api/v1/exceptions`, `PATCH /api/v1/exceptions/{id}` |
+| Tax | `GET /api/v1/tax` |
+| Exports | `GET /api/v1/export/ledger.csv`, `GET /api/v1/export/exceptions.csv`, `GET /api/v1/export/report.pdf` |
+| Demo | `POST /api/v1/demo/load`, `POST /api/v1/reset` |
+| Webhooks | `POST /api/v1/webhooks/transactions` |
 
-## Roadmap
+All API errors use a common structure:
 
-Connector profiles shared across a firm, a CA review export, and Bitcoin wallet support. Not in this desk: exchange API keys, private keys, or automated trading.
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "A human-readable explanation",
+    "details": {},
+    "request_id": "..."
+  }
+}
+```
 
-## Suggested GitHub description
+### CLI examples
 
-Reconciliation desk for retail crypto records: FastAPI plus React, India tax estimate, exception workflow.
+After installing the package, use the `orbit` command:
 
-Topics: `crypto`, `fastapi`, `react`, `typescript`, `reconciliation`, `data-integration`, `forward-deployed-engineer`, `india-crypto-tax`
+```bash
+orbit import sample-data/wazirx_trades.csv sample-data/binance_trades.csv sample-data/wallet_transfers.json
+orbit reconcile
+orbit exceptions --status open
+orbit exceptions --status open --severity high
+orbit export --format csv
+orbit export --format exceptions
+```
+
+The CLI calls the same database and reconciliation services as the API. It runs migrations before each command.
+
+## Configuration
+
+Settings are read from environment variables, with `.env` support through Pydantic Settings. Common variables are:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DEMO_MODE` | `true` | Enables sample loading and unauthenticated write operations. Set to `false` outside demos. |
+| `API_KEY` | empty | Required for write calls when demo mode is disabled; clients send `X-API-Key`. |
+| `DATABASE_URL` | `sqlite:///./data/orbit.db` | SQLite or Postgres connection URL. |
+| `PRICES_ONLINE` | `false` | Enables optional CoinGecko lookups before fallback prices. |
+| `CORS_ORIGINS` | local ports | Comma-separated allowed browser origins. |
+| `TRANSFER_WINDOW_HOURS` | `6` | Maximum transfer matching time window. |
+| `TRANSFER_TOLERANCE_PCT` | `0.5` | Quantity tolerance used for network fees. |
+| `PRICE_DEVIATION_PCT` | `8` | Threshold for a price-deviation exception. |
+| `FEES_AS_COST` | `false` | Whether fees are included in acquisition cost for the estimate. |
+| `ANTHROPIC_API_KEY` | empty | Optional key for assisted column mapping; the application works without it. |
+
+For a production deployment, set `DEMO_MODE=false`, configure `API_KEY`, use Postgres for durable storage, and restrict `CORS_ORIGINS` to known frontend origins.
+
+## Testing and CI
+
+### Backend
+
+```bash
+pytest -q --cov=app --cov-fail-under=85
+ruff check app tests
+ruff format --check app tests
+mypy app
+```
+
+### Frontend
+
+```bash
+cd web
+npm run typecheck
+npm test
+npm run lint
+```
+
+### End-to-end tests
+
+The Playwright configuration starts both the FastAPI server and Vite server. Install the backend package first, then install Chromium:
+
+```bash
+python -m pip install -e .
+cd web
+npm install
+npx playwright install --with-deps chromium
+npm run e2e
+```
+
+The E2E tests reset and load their own SQLite database, exercise the sample-data flow, resolve an exception, check accessibility with axe, and verify CSV download behavior.
+
+GitHub Actions runs backend checks against SQLite and Postgres, frontend unit/type checks, Playwright, and the Docker build. The workflow is [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+## Adding a connector
+
+Read [docs/writing-a-connector.md](docs/writing-a-connector.md), then:
+
+1. Add a module under `app/connectors/` with `detect` and `parse` behavior.
+2. Register the connector in `builtin_connectors()`.
+3. Detect by header signature, not by filename.
+4. Normalize rows into the canonical transaction schema.
+5. Return import issues for bad rows instead of raising for the whole file.
+6. Add representative sample data and tests for valid rows, malformed rows, dates, decimals, and duplicate handling.
+7. Run the backend tests and the connector-specific tests.
+
+## Deployment
+
+### Docker
+
+The root `Dockerfile` builds the web application and packages it with FastAPI. Build and run it directly with:
+
+```bash
+docker build -t crypto-orbit .
+docker run --rm -p 8000:8000 crypto-orbit
+```
+
+### Render
+
+`render.yaml` provides a Docker web-service blueprint. Before using it with real data:
+
+- Set `DEMO_MODE=false`.
+- Set a strong `API_KEY` secret.
+- Use a durable Postgres `DATABASE_URL` rather than local SQLite.
+- Configure the correct `CORS_ORIGINS`.
+- Confirm `/ready` is healthy after deployment.
+
+SQLite on an ephemeral hosting disk is suitable for demos only; data can be lost when the instance is replaced.
+
+## Security and limitations
+
+Security measures include request IDs, structured logs, signed webhook payloads, private-address checks for outbound webhook URLs, formula-safe CSV exports, upload limits, and API-key protection for write operations outside demo mode. See [docs/security.md](docs/security.md).
+
+Current limitations:
+
+- No DeFi positions or NFT accounting.
+- ETH-style wallet JSON only unless another connector is added.
+- FIFO tax estimate only.
+- No loss offsetting in the current tax model.
+- Prices use the bundled fallback file when online lookups are disabled or unavailable.
+- The estimate is not tax advice and must be reviewed before filing or making financial decisions.
+
+## Repository tour
+
+| Path | Purpose |
+| --- | --- |
+| `app/` | FastAPI application, services, models, routers, connectors, and reconciliation engine |
+| `web/` | React/Vite frontend, pages, components, API client, and E2E tests |
+| `sample-data/` | Seed files and offline price fallback |
+| `tests/` | Backend unit and API tests |
+| `docs/` | Architecture, security, runbook, onboarding, and connector guidance |
+| `alembic/` | Database migrations |
+| `Dockerfile` | Multi-stage production image |
+| `docker-compose.yml` | Local Docker development stack |
+| `.github/workflows/ci.yml` | Backend, frontend, Playwright, and Docker CI |
+
+## Further documentation
+
+- [Architecture](docs/architecture.md)
+- [Security notes](docs/security.md)
+- [Operations runbook](docs/runbook.md)
+- [Customer onboarding](docs/customer-onboarding.md)
+- [Writing a connector](docs/writing-a-connector.md)
+- [Sample-data guide](sample-data/README.md)
+- [Architecture decision records](docs/adr)
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
