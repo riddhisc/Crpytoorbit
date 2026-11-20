@@ -10,7 +10,7 @@ test.beforeEach(async ({ request }) => {
 
 test("load sample data and see exceptions", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: /sample data/i }).click();
+  await page.getByRole("button", { name: "Try with sample data" }).click();
   await expect(page.getByText(/UNMATCHED_WITHDRAWAL|Open exceptions|Needs your attention/i).first()).toBeVisible();
   await page.getByRole("link", { name: /Exceptions/i }).first().click();
   await expect(page.getByText("UNMATCHED_WITHDRAWAL").first()).toBeVisible();
@@ -22,7 +22,7 @@ test("load sample data and see exceptions", async ({ page }) => {
 test("filter and resolve an exception", async ({ page, request }) => {
   const load = await request.post(`${apiBase}/api/v1/demo/load`);
   expect(load.ok()).toBeTruthy();
-  await page.goto("/exceptions?status=open&severity=low");
+  await page.goto("/exceptions?status=open&type=MISSING_FEE");
   await page.getByText("MISSING_FEE").first().click();
   await page.getByLabel("Note").fill("Fee was waived on the exchange.");
   await page.getByRole("button", { name: "Resolve" }).click();
@@ -33,9 +33,7 @@ test("export csv", async ({ page, request }) => {
   const load = await request.post(`${apiBase}/api/v1/demo/load`);
   expect(load.ok()).toBeTruthy();
   await page.goto("/exceptions");
-  const [file] = await Promise.all([
-    page.waitForEvent("download"),
-    page.goto("/api/v1/export/exceptions.csv"),
-  ]);
-  expect(file.suggestedFilename()).toContain("exceptions");
+  const response = await request.get(`${apiBase}/api/v1/export/exceptions.csv`);
+  expect(response.ok()).toBeTruthy();
+  expect(response.headers()["content-disposition"]).toContain("exceptions.csv");
 });
