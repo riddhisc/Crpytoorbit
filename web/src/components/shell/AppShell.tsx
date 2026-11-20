@@ -79,7 +79,7 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
                   Load sample data
                 </button>
               ) : null}
-              <button className="min-h-11 rounded-md border border-line px-3 text-sm" onClick={toggleTheme} aria-label="Toggle color theme">
+              <button className="min-h-11 rounded-md border border-line px-3 text-sm" onClick={toggleTheme}>
                 {theme === "dark" ? "Light" : "Dark"}
               </button>
               <span className="rounded-md border border-line px-2 py-1 text-xs" title="Crypto Orbit never asks for private keys or exchange API secrets.">
